@@ -16,7 +16,8 @@
         canvas { background: #111; }
         #footer { height: 140px; background: #1a1a1a; padding: 15px; border-top: 1px solid #444; }
         textarea { width: 100%; height: 70px; background: #000; color: #00ff00; border: 1px solid #333; font-family: 'Consolas', monospace; font-size: 12px; padding: 10px; box-sizing: border-box; }
-        input { width: 100%; background: #333; border: 1px solid #555; color: white; padding: 5px; margin-top: 5px; box-sizing: border-box; }
+        input, select { width: 100%; background: #333; border: 1px solid #555; color: white; padding: 5px; margin-top: 5px; box-sizing: border-box; }
+        label { font-size: 12px; color: #888; display: block; margin-top: 10px; }
     </style>
 </head>
 <body>
@@ -26,24 +27,31 @@
     <div class="btn" id="mode-wire" onclick="setMode('wire')">Провод (Орто)</div>
     <hr style="border:0; border-top:1px solid #333; margin:10px 0;">
     <div class="btn" onclick="addComponent('resistor')">Резистор</div>
+    <div class="btn" onclick="addComponent('capacitor')">Конденсатор</div>
     <div class="btn" onclick="addComponent('node')">Узел</div>
     <div class="btn" onclick="addComponent('ground')">Общий провод</div>
     
+    <label>Стиль LaTeX:</label>
+    <select id="style-select" onchange="render()">
+        <option value="european">European (Rectangle)</option>
+        <option value="american">American (ZigZag)</option>
+    </select>
+
     <div id="props-panel" class="props">
-        <div style="font-size:10px; color:#888;">СВОЙСТВА</div>
-        <label style="font-size:12px;">Метка:</label>
+        <div style="font-size:10px; color:#888;">СВОЙСТВА ЭЛЕМЕНТА</div>
+        <label>Метка:</label>
         <input type="text" id="label-edit" oninput="updateLabel(this.value)">
     </div>
 
     <hr style="border:0; border-top:1px solid #333; margin:10px 0;">
-    <div class="btn" style="background:#f39c12;" onclick="reorderLabels()">Перенумеровать R</div>
+    <div class="btn" style="background:#f39c12;" onclick="reorderLabels()">Перенумеровать элементы</div>
     <div class="btn delete" onclick="deleteSelected()">Удалить (Del)</div>
     <button onclick="generateLatex()" style="width:100%; padding:12px; background:#27ae60; color:white; border:none; cursor:pointer; font-weight:bold; border-radius:4px; margin-top:auto;">В LaTeX</button>
 </div>
 
 <div id="main">
     <div id="canvas-container"><canvas id="c"></canvas></div>
-    <div id="footer"><textarea id="output" readonly></textarea></div>
+    <div id="footer"><textarea id="output" readonly placeholder="Здесь будет код для LaTeX..."></textarea></div>
 </div>
 
 <script>
@@ -54,17 +62,17 @@
 
     let elements = [], wires = [];
     let mode = 'move', isDragging = false, isPanning = false, isWiring = false;
-    let dragEl = null, selectedObj = null, lastMousePos = {x:0, y:0}, wireStart = null, tempWireEnd = null;
+    let selectedObj = null, lastMousePos = {x:0, y:0}, wireStart = null, tempWireEnd = null;
     let scale = 0.8, offsetX = 50, offsetY = 50;
     let dragOffset = {x: 0, y: 0};
 
-    function setMode(m) { mode = m; document.querySelectorAll('.btn').forEach(b => b.classList.remove('active')); document.getElementById('mode-' + m).classList.add('active'); }
+    function setMode(m) { mode = m; document.querySelectorAll('.btn').forEach(b => b.classList.remove('active')); if(document.getElementById('mode-' + m)) document.getElementById('mode-' + m).classList.add('active'); }
 
     function getAnchors(el) {
         if (!el) return [];
         if (el.type === 'node') return [{x: el.x, y: el.y, id: el.id, anchorIdx: 0}];
         if (el.type === 'ground') return [{x: el.x, y: el.y - 20, id: el.id, anchorIdx: 0}];
-        if (el.type === 'resistor') {
+        if (el.type === 'resistor' || el.type === 'capacitor') {
             let v = el.angle % 180 !== 0;
             return [
                 { x: el.x + (v?0:-40), y: el.y + (v?-40:0), id: el.id, anchorIdx: 0 },
@@ -88,6 +96,7 @@
     }
 
     function render() {
+        const style = document.getElementById('style-select').value;
         ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, canvas.width, canvas.height);
         ctx.translate(offsetX, offsetY); ctx.scale(scale, scale);
         ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, sheetWidth, sheetHeight);
@@ -109,31 +118,55 @@
             ctx.lineTo(tempWireEnd.x, tempWireEnd.y); ctx.stroke();
         }
 
-        elements.forEach(el => {
+         elements.forEach(el => {
             ctx.save(); ctx.translate(el.x, el.y); 
             ctx.fillStyle = "#000"; ctx.font = "italic 14px Arial";
             if (typeof el.label === 'string') ctx.fillText(el.label, (el.angle % 180 !== 0) ? 25 : -10, (el.angle % 180 !== 0) ? 5 : -15);
             ctx.rotate((el.angle||0)*Math.PI/180);
             ctx.strokeStyle = (selectedObj === el) ? "#e74c3c" : "#000";
             ctx.lineWidth = (selectedObj === el) ? 3 : 2;
+            
             if(el.type==='resistor') {
-                ctx.fillStyle='#fff'; ctx.beginPath(); ctx.moveTo(-40,0); ctx.lineTo(40,0); ctx.stroke();
-                ctx.fillRect(-20,-8,40,16); ctx.strokeRect(-20,-8,40,16);
-            } else if(el.type==='node') { ctx.fillStyle=ctx.strokeStyle; ctx.beginPath(); ctx.arc(0,0,5,0,7); ctx.fill(); }
-            else if(el.type==='ground') { ctx.beginPath(); ctx.moveTo(0,-20); ctx.lineTo(0,0); ctx.moveTo(-15,0); ctx.lineTo(15,0); ctx.stroke(); }
+                // ВЫВОДЫ (теперь рисуются всегда)
+                ctx.beginPath(); ctx.moveTo(-40,0); ctx.lineTo(-20,0); ctx.moveTo(20,0); ctx.lineTo(40,0); ctx.stroke();
+                
+                if(style === 'european') {
+                    ctx.fillStyle='#fff'; ctx.fillRect(-20,-8,40,16); ctx.strokeRect(-20,-8,40,16);
+                } else {
+                    // Американский зигзаг
+                    ctx.beginPath(); ctx.moveTo(-20,0); 
+                    ctx.lineTo(-15,8); ctx.lineTo(-5,-8); ctx.lineTo(5,8); ctx.lineTo(15,-8); ctx.lineTo(20,0); ctx.stroke();
+                }
+            } else if(el.type==='capacitor') {
+                // Выводы и обкладки конденсатора
+                ctx.beginPath(); ctx.moveTo(-40,0); ctx.lineTo(-6,0); ctx.moveTo(40,0); ctx.lineTo(6,0);
+                ctx.moveTo(-6,-15); ctx.lineTo(-6,15); ctx.moveTo(6,-15); ctx.lineTo(6,15); ctx.stroke();
+            } else if(el.type==='node') { 
+                ctx.fillStyle=ctx.strokeStyle; ctx.beginPath(); ctx.arc(0,0,5,0,7); ctx.fill(); 
+            } else if(el.type==='ground') { 
+                ctx.beginPath(); ctx.moveTo(0,-20); ctx.lineTo(0,0); ctx.moveTo(-15,0); ctx.lineTo(15,0); ctx.stroke(); 
+            }
             ctx.restore();
         });
     }
 
     function addComponent(t) { 
         let count = elements.filter(e => e.type === t).length + 1;
-        let prefix = (t === 'resistor' ? "R" : (t === 'ground' ? "GND" : ""));
-        elements.push({type:t, x:200, y:200, angle:0, id: Date.now(), label: prefix + (t === 'resistor' ? count : "")}); 
+        let prefix = (t === 'resistor' ? "R" : (t === 'capacitor' ? "C" : (t === 'ground' ? "GND" : "")));
+        elements.push({type:t, x:200, y:200, angle:0, id: Date.now(), label: prefix + (['node', 'ground'].includes(t) ? "" : count)}); 
         render(); 
     }
 
     function updateLabel(val) { if(selectedObj && selectedObj.type) { selectedObj.label = val; render(); } }
-    function reorderLabels() { elements.filter(e => e.type === 'resistor').sort((a,b) => (a.y-b.y)||(a.x-b.x)).forEach((el,i) => el.label = "R"+(i+1)); render(); }
+    
+    function reorderLabels() { 
+        ['resistor', 'capacitor'].forEach(type => {
+            let pref = type === 'resistor' ? 'R' : 'C';
+            elements.filter(e => e.type === type).sort((a,b) => (a.y-b.y)||(a.x-b.x)).forEach((el,i) => el.label = pref+(i+1));
+        });
+        render(); 
+    }
+
     function getMousePos(e) { const r = canvas.getBoundingClientRect(); return { x:(e.clientX-r.left-offsetX)/scale, y:(e.clientY-r.top-offsetY)/scale }; }
     
     canvas.onmousedown = (e) => {
@@ -143,7 +176,7 @@
             isWiring = true;
             let snap = null;
             elements.forEach(el => getAnchors(el).forEach(a => { if(Math.hypot(a.x-pos.x, a.y-pos.y) < 15) snap = a; }));
-            wireStart = snap ? {x: snap.x, y: snap.y, elId: snap.id, idx: snap.anchorIdx} : { x: Math.round(pos.x/gridSize)*gridSize, y: Math.round(pos.y/gridSize)*gridSize };
+            wireStart = snap ? {x: snap.x, y: snap.y, elId: snap.id, idx: snap.anchorIdx} : { x: Math.round(pos.x/gridSize)*gridSize, y: Math.round(pos.y/gridSize)*gridSize, elId: null };
         } else {
             let found = elements.find(el => Math.hypot(el.x-pos.x, el.y-pos.y) < 25);
             if(!found) {
@@ -214,28 +247,41 @@
         selectedObj = null; document.getElementById('props-panel').style.display='none'; render();
     }
 
-    function generateLatex() {
-        let code = "\\begin{circuitikz}[european]\n";
+      function generateLatex() {
+        const style = document.getElementById('style-select').value;
+        let code = "\\begin{circuitikz}[" + style + "]\n";
+        
+        // Сначала рисуем провода
         wires.forEach(w => {
             const {p1, p2} = getWirePoints(w);
             let x1 = (p1.x/40).toFixed(1), y1 = (-p1.y/40).toFixed(1), x2 = (p2.x/40).toFixed(1), y2 = (-p2.y/40).toFixed(1);
+            if (x1 === x2 && y1 === y2) return;
             code += (x1 !== x2 && y1 !== y2) ? `  \\draw (${x1},${y1}) -| (${x2},${y2});\n` : `  \\draw (${x1},${y1}) -- (${x2},${y2});\n`;
         });
+
+        // Рисуем элементы
         elements.forEach(el => {
-            let lx = (el.x/40).toFixed(1), ly = (-el.y/40).toFixed(1), lbl = el.label ? `, l=${el.label}` : "";
-            if(el.type==='resistor') {
-                code += (el.angle%180===0) ? `  \\draw (${lx-1},${ly}) to[R${lbl}] (${+lx+1},${ly});\n` : `  \\draw (${lx},${+ly+1}) to[R${lbl}] (${lx},${ly-1});\n`;
+            let lx = parseFloat((el.x/40).toFixed(1)), ly = parseFloat((-el.y/40).toFixed(1));
+            let lbl = el.label ? `, l=${el.label}` : "";
+            
+            if(el.type==='resistor' || el.type==='capacitor') {
+                let comp = el.type === 'resistor' ? 'R' : 'C';
+                // Компоненту НУЖНЫ две точки. Мы берем +/- 1 единицу от центра.
+                if(el.angle % 180 === 0) {
+                    // Горизонтально
+                    code += `  \\draw (${(lx-1).toFixed(1)},${ly}) to[${comp}${lbl}] (${(lx+1).toFixed(1)},${ly});\n`;
+                } else {
+                    // Вертикально
+                    code += `  \\draw (${lx},${(ly+1).toFixed(1)}) to[${comp}${lbl}] (${lx},${(ly-1).toFixed(1)});\n`;
+                }
             } else if(el.type==='node') {
-                code += `  \\fill (${lx},${ly}) circle (2pt);\n`;
-            } else if(el.type==='ground') {
-                // ИСПРАВЛЕННЫЙ БЛОК:
-                // Рисуем вертикальный отвод вверх к точке привязки (на 0.5 единицы выше)
-                // и горизонтальную черту шириной 0.8 единицы (по 0.4 в стороны)
-                let x = parseFloat(lx);
-                let y = parseFloat(ly);
-                code += `  \\draw (${x.toFixed(1)},${y.toFixed(1)}) -- (${x.toFixed(1)},${(y + 0.5).toFixed(1)});\n`;
-                code += `  \\draw (${(x - 0.4).toFixed(1)},${y.toFixed(1)}) -- (${(x + 0.4).toFixed(1)},${y.toFixed(1)});\n`;
-            }
+    code += `  \\fill (${lx.toFixed(1)},${ly.toFixed(1)}) circle (2pt);\n`;
+} else if(el.type==='ground') {
+    // Сдвигаем точку рисования на 0.5 (20px / 40), так как в JS вывод смещен вверх
+    let connectionY = (-(el.y - 20) / 40).toFixed(1); 
+    code += `  \\draw (${lx.toFixed(1)},${connectionY}) node[rground]{};\n`;
+}
+
         });
         document.getElementById('output').value = code + "\\end{circuitikz}";
     }
